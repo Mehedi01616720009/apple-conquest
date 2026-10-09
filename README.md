@@ -89,7 +89,7 @@ Vassals: 0 | Outcome: ongoing
 >
 ```
 
-The world advances every second, including while you type commands. Ten simulation ticks are displayed as one game day. Use `pause` to stop the simulation and `resume` to continue it. Periodic summaries and game events appear in the terminal; `events` shows recent events again.
+The world advances on a 12-second cadence, including while you type commands. Ten simulation ticks are still tracked as one game day in the summary output, but the real-time clock advances in 12-second steps to match the AGENT design. Use `pause` to stop the simulation and `resume` to continue it. Periodic summaries and game events appear in the terminal; `events` shows recent events again.
 
 ## Commands
 
@@ -147,9 +147,17 @@ Each forge upgrade raises the army level by one, starting at level 1, and each l
 
 - **War:** Required before attacking that ruler's castles.
 - **Rivalry:** Marks hostile relations, but attacks still require a declaration of war.
-- **Truce:** Ends an existing war or rivalry.
-- **Alliance:** A proposal may be accepted or declined by the AI ruler.
-- **Vassal:** A ruler may swear fealty based on relative military strength and chance. Their castles count toward your realm while they remain your vassal.
+- **Truce:** A truce is only accepted when the player is materially stronger by the AGENT thresholds, with a 50% acceptance chance in the mid-range case.
+- **Alliance:** The AI accepts only if the player's resource total exceeds the target's and both economies are within a 20% army-strength tolerance.
+- **Vassal:** A vassal offer is accepted only when the player is at least 60% stronger in resources and at least 50% stronger in army size relative to the target.
+
+Concrete acceptance thresholds used by the game are:
+
+- Alliance: `playerResources > targetResources` and `abs(playerArmy - targetArmy) <= 20% of the higher value`.
+- Vassal: `playerResources >= 160% of targetResources` and `playerArmy >= 150% of targetArmy`.
+- Truce: either `playerResources >= 160%` and `playerArmy >= 160%`, or a mid-range case of `135% to 159%` on resources and `140% to 159%` on army with a 50% probability check.
+
+AI rulers also declare war on neighboring AI rulers under the same peace-to-war logic instead of only targeting the player.
 
 Win by controlling all ten castles directly or through vassals. You lose if you have no directly controlled castles. AI rulers develop their castles, recruit troops, may declare war when bordering your realm, and can attack during war. Diplomacy and AI actions are currently a lightweight first implementation rather than a complete grand-strategy simulation.
 

@@ -148,27 +148,35 @@ func (g *Game) Diplomacy(action, castleName string) error {
 		if current != War && current != Rivalry {
 			return fmt.Errorf("there is no war or rivalry to end with %s", ruler)
 		}
-		g.Relations[ruler] = Truce
-		g.addEvent(fmt.Sprintf("A truce was agreed with %s.", ruler))
+		if g.acceptDiplomacyOffer("truce", ruler) {
+			g.Relations[ruler] = Truce
+			g.addEvent(fmt.Sprintf("%s accepted a truce with %s.", ruler, g.PlayerName))
+		} else {
+			g.Relations[ruler] = Peace
+			g.addEvent(fmt.Sprintf("%s rejected the truce offer.", ruler))
+		}
 	case "ally", "alliance":
 		if current == War {
 			return fmt.Errorf("an alliance cannot be proposed during war")
 		}
-		if g.rng.Intn(100) < 65 {
+		if g.acceptDiplomacyOffer("alliance", ruler) {
 			g.Relations[ruler] = Alliance
 			g.addEvent(fmt.Sprintf("%s accepted an alliance with %s.", ruler, g.PlayerName))
 		} else {
+			g.Relations[ruler] = Rivalry
 			g.addEvent(fmt.Sprintf("%s declined the alliance proposal.", ruler))
 		}
 	case "vassal":
 		if current == War {
 			return fmt.Errorf("a vassal offer cannot be made during war")
 		}
-		if g.rulerPower(g.PlayerName) >= g.rulerPower(ruler) || g.rng.Intn(100) < 35 {
+		if g.acceptDiplomacyOffer("vassal", ruler) {
 			g.Vassals[ruler] = true
+			g.VassalParents[ruler] = g.PlayerName
 			g.Relations[ruler] = Alliance
 			g.addEvent(fmt.Sprintf("%s swore fealty to %s.", ruler, g.PlayerName))
 		} else {
+			g.Relations[ruler] = Rivalry
 			g.addEvent(fmt.Sprintf("%s refused to become a vassal.", ruler))
 		}
 	default:
@@ -176,6 +184,78 @@ func (g *Game) Diplomacy(action, castleName string) error {
 	}
 	g.CheckOutcome()
 	return nil
+}
+
+func (g *Game) acceptDiplomacyOffer(action, ruler string) bool {
+	myResources := g.resourceSumFor(g.PlayerName)
+	targetResources := g.resourceSumFor(ruler)
+	myArmy := g.armyTotalFor(g.PlayerName)
+	targetArmy := g.armyTotalFor(ruler)
+
+	if targetResources <= 0 {
+		targetResources = 1
+	}
+	if targetArmy <= 0 {
+		targetArmy = 1
+	}
+
+	switch action {
+	case "alliance":
+		if myResources <= targetResources {
+			return false
+		}
+		return withinTolerance(myArmy, targetArmy, 0.20)
+	case "vassal":
+		if myResources < int(float64(targetResources)*1.6) {
+			return false
+		}
+		return myArmy >= int(float64(targetArmy)*1.5)
+	case "truce":
+		if myResources >= int(float64(targetResources)*1.6) && myArmy >= int(float64(targetArmy)*1.6) {
+			return true
+		}
+		if myResources >= int(float64(targetResources)*1.35) && myResources < int(float64(targetResources)*1.6) &&
+			myArmy >= int(float64(targetArmy)*1.4) && myArmy < int(float64(targetArmy)*1.6) {
+			return g.rng.Float64() < 0.5
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func (g *Game) resourceSumFor(owner string) int {
+	total := 0
+	for _, c := range g.Castles {
+		if c.Owner == owner {
+			total += c.Gold + c.Wood + c.Food
+		}
+	}
+	return total
+}
+
+func (g *Game) armyTotalFor(owner string) int {
+	total := 0
+	for _, c := range g.Castles {
+		if c.Owner == owner {
+			total += c.Troops + c.Garrison
+		}
+	}
+	return total
+}
+
+func withinTolerance(valueA, valueB int, tolerance float64) bool {
+	if valueA == valueB {
+		return true
+	}
+	low, high := valueA, valueB
+	if low > high {
+		low, high = high, low
+	}
+	if high == 0 {
+		return true
+	}
+	return float64(high-low) <= tolerance*float64(high)
 }
 
 func (g *Game) Attack(fromName, targetName string, troops int) error {
@@ -187,7 +267,7 @@ func (g *Game) Attack(fromName, targetName string, troops int) error {
 	if err != nil {
 		return err
 	}
-	if from.Owner != g.PlayerName {
+	if !g.PlayerControls(from) {
 		return fmt.Errorf("attacks must be launched from a castle you directly control")
 	}
 	if troops < 1 || troops > from.Troops {
@@ -202,8 +282,105 @@ func (g *Game) Attack(fromName, targetName string, troops int) error {
 	if g.Relations[target.Owner] != War {
 		return fmt.Errorf("declare war on %s before attacking", target.Owner)
 	}
-	g.resolveBattle(from, target, troops)
+	g.Orders = append(g.Orders, ArmyOrder{Type: "attack", From: from.Name, To: target.Name, Owner: from.Owner, Troops: troops, Artillery: from.Artillery, TravelDays: 2, HoldDays: 1})
+	g.addEvent(fmt.Sprintf("%s ordered %d troops from %s to march toward %s; they will arrive in 2 days and attack for 1 day.", from.Owner, troops, from.Name, target.Name))
 	g.CheckOutcome()
+	return nil
+}
+
+func (g *Game) MoveArmy(fromName, toName string, troops int) error {
+	from, err := g.Castle(fromName)
+	if err != nil {
+		return err
+	}
+	to, err := g.Castle(toName)
+	if err != nil {
+		return err
+	}
+	if from.Name == to.Name {
+		return fmt.Errorf("armies cannot be moved to the same castle")
+	}
+	if !g.PlayerControls(from) {
+		return fmt.Errorf("you can only move troops from a castle you control")
+	}
+	if troops < 1 || troops > from.Troops {
+		return fmt.Errorf("you have %d field troops available at %s", from.Troops, from.Name)
+	}
+	if !(to.Owner == from.Owner || to.Owner == g.PlayerName || g.Vassals[to.Owner] || g.Relations[to.Owner] == Alliance || g.Relations[to.Owner] == Truce) {
+		return fmt.Errorf("you can only move troops to a castle in your realm, an ally, or a vassal")
+	}
+	if from.Owner != to.Owner && !contains(from.Neighbors, to.Name) {
+		return fmt.Errorf("%s does not border %s", from.Name, to.Name)
+	}
+	g.Orders = append(g.Orders, ArmyOrder{Type: "move", From: from.Name, To: to.Name, Owner: from.Owner, Troops: troops, TravelDays: 2})
+	g.addEvent(fmt.Sprintf("%s moved %d troops from %s to %s; arrival in 2 days.", from.Owner, troops, from.Name, to.Name))
+	return nil
+}
+
+func (g *Game) RequestArmy(castleName string) error {
+	c, err := g.Castle(castleName)
+	if err != nil {
+		return err
+	}
+	if !g.Vassals[c.Owner] && g.Relations[c.Owner] != Alliance {
+		return fmt.Errorf("you can only request reinforcements from an ally or vassal")
+	}
+	var destination *Castle
+	for _, neighborName := range c.Neighbors {
+		neighbor := g.Castles[neighborName]
+		if neighbor != nil && neighbor.Owner == g.PlayerName {
+			destination = neighbor
+			break
+		}
+	}
+	if destination == nil {
+		return fmt.Errorf("%s has no neighboring castle under your direct control", c.Name)
+	}
+	if g.rng.Intn(100) < 50 {
+		g.addEvent(fmt.Sprintf("%s refused the request for reinforcements.", c.Owner))
+		return nil
+	}
+	troops := (c.Troops + c.Garrison) * 15 / 100
+	if troops < 1 {
+		g.addEvent(fmt.Sprintf("%s agreed, but has no 15%% army share available to send.", c.Owner))
+		return nil
+	}
+	fromField := min(troops, c.Troops)
+	c.Troops -= fromField
+	c.Garrison -= troops - fromField
+	g.Orders = append(g.Orders, ArmyOrder{Type: "reinforcement", From: c.Name, To: destination.Name, Owner: c.Owner, Troops: troops, TravelDays: 2})
+	g.addEvent(fmt.Sprintf("%s agreed to send %d troops to %s; arrival in 2 days.", c.Owner, troops, destination.Name))
+	return nil
+}
+
+func (g *Game) Trade(sourceName, targetName string, gold, wood, food int) error {
+	source, err := g.Castle(sourceName)
+	if err != nil {
+		return err
+	}
+	target, err := g.Castle(targetName)
+	if err != nil {
+		return err
+	}
+	if gold < 0 || wood < 0 || food < 0 {
+		return fmt.Errorf("trade quantities must be non-negative")
+	}
+	if !g.PlayerControls(source) {
+		return fmt.Errorf("you can only trade from a castle you control")
+	}
+	if !(target.Owner == source.Owner || target.Owner == g.PlayerName || g.Vassals[target.Owner] || g.Relations[target.Owner] == Alliance || g.Relations[target.Owner] == Truce) {
+		return fmt.Errorf("trade is only allowed within your realm, with a vassal, or with an ally")
+	}
+	if source.Gold < gold || source.Wood < wood || source.Food < food {
+		return fmt.Errorf("%s does not have enough resources to trade", source.Name)
+	}
+	source.Gold -= gold
+	source.Wood -= wood
+	source.Food -= food
+	target.Gold += gold
+	target.Wood += wood
+	target.Food += food
+	g.addEvent(fmt.Sprintf("%s traded %d gold, %d wood, and %d food with %s.", source.Name, gold, wood, food, target.Name))
 	return nil
 }
 

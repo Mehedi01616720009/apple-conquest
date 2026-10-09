@@ -21,12 +21,15 @@ type App struct {
 
 var colorCodes = map[string]string{
 	"red":     "\033[31m",
+	"orange":  "\033[38;5;208m",
 	"green":   "\033[32m",
 	"yellow":  "\033[33m",
 	"blue":    "\033[34m",
 	"magenta": "\033[35m",
 	"cyan":    "\033[36m",
 	"white":   "\033[37m",
+	"pink":    "\033[38;5;205m",
+	"teal":    "\033[38;5;37m",
 }
 
 func Run(noColor bool) error {
@@ -35,17 +38,6 @@ func Run(noColor bool) error {
 	name, err := prompt(scanner, "Ruler name: ")
 	if err != nil {
 		return err
-	}
-	color, err := prompt(scanner, "Color (red/green/yellow/blue/magenta/cyan/white) [green]: ")
-	if err != nil {
-		return err
-	}
-	color = strings.ToLower(strings.TrimSpace(color))
-	if color == "" {
-		color = "green"
-	}
-	if _, ok := colorCodes[color]; !ok {
-		return fmt.Errorf("unsupported color %q", color)
 	}
 	fmt.Fprintln(os.Stdout, "\nChoose your starting castle:")
 	for index, name := range game.CastleNames() {
@@ -56,7 +48,7 @@ func Run(noColor bool) error {
 		return err
 	}
 
-	world, err := game.NewGame(name, color, startingCastle, time.Now().UnixNano())
+	world, err := game.NewGame(name, "", startingCastle, time.Now().UnixNano())
 	if err != nil {
 		return err
 	}
@@ -65,7 +57,7 @@ func Run(noColor bool) error {
 	fmt.Fprintln(app.Out)
 	app.printBanner()
 	app.RenderMap()
-	fmt.Fprintln(app.Out, "Type help to see available commands. Time advances once per second.")
+	fmt.Fprintln(app.Out, "Type help to see available commands. Time advances every 12 seconds.")
 
 	lines := make(chan string)
 	go func() {
@@ -75,7 +67,7 @@ func Run(noColor bool) error {
 		}
 	}()
 
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(app.Game.TickStepDuration())
 	defer ticker.Stop()
 	fmt.Fprint(app.Out, "\n> ")
 	for {
@@ -98,8 +90,12 @@ func Run(noColor bool) error {
 				fmt.Fprintln(app.Out, "The campaign has been paused. Farewell, ruler.")
 				return nil
 			}
+			previousSpeed := app.Game.SpeedSeconds
 			if err := app.Execute(line); err != nil {
 				fmt.Fprintf(app.Out, "Error: %v\n", err)
+			}
+			if previousSpeed != app.Game.SpeedSeconds {
+				ticker.Reset(app.Game.TickStepDuration())
 			}
 			app.printNewEvents()
 			if app.Game.Outcome != game.Ongoing {
@@ -144,6 +140,19 @@ func (a *App) Execute(line string) error {
 	case "resume":
 		a.Game.Paused = false
 		fmt.Fprintln(a.Out, "Time resumed.")
+	case "speed":
+		if len(parts) == 1 {
+			fmt.Fprintf(a.Out, "Current speed: %s (%d sec/day)\n", speedLabel(a.Game.SpeedSeconds), a.Game.SpeedSeconds)
+			return nil
+		}
+		if len(parts) != 2 {
+			return fmt.Errorf("usage: speed <slower|slow|normal|fast|faster>")
+		}
+		if err := a.Game.SetSpeed(parts[1]); err != nil {
+			return err
+		}
+		fmt.Fprintf(a.Out, "Speed set to %s (%d sec/day).\n", speedLabel(a.Game.SpeedSeconds), a.Game.SpeedSeconds)
+		return nil
 	case "build":
 		if len(parts) != 3 {
 			return fmt.Errorf("usage: build <castle#> <farm|house|sawmill|market|barracks|artillery|forge>")
@@ -176,6 +185,37 @@ func (a *App) Execute(line string) error {
 			return err
 		}
 		return a.Game.WithdrawGarrison(parts[1], amount)
+	case "move":
+		if len(parts) != 4 {
+			return fmt.Errorf("usage: move <from#> <to#> <troops>")
+		}
+		amount, err := parseAmount(parts[3])
+		if err != nil {
+			return err
+		}
+		return a.Game.MoveArmy(parts[1], parts[2], amount)
+	case "request":
+		if len(parts) != 2 {
+			return fmt.Errorf("usage: request <ally-or-vassal-castle#>")
+		}
+		return a.Game.RequestArmy(parts[1])
+	case "trade":
+		if len(parts) != 6 {
+			return fmt.Errorf("usage: trade <source#> <target#> <gold> <wood> <food>")
+		}
+		gold, err := parseAmount(parts[3])
+		if err != nil {
+			return err
+		}
+		wood, err := parseAmount(parts[4])
+		if err != nil {
+			return err
+		}
+		food, err := parseAmount(parts[5])
+		if err != nil {
+			return err
+		}
+		return a.Game.Trade(parts[1], parts[2], gold, wood, food)
 	case "upgrade":
 		if len(parts) != 2 {
 			return fmt.Errorf("usage: upgrade <castle#>")
@@ -217,13 +257,17 @@ func (a *App) printHelp() {
 	fmt.Fprintln(a.Out, "  map                                      regional castle map")
 	fmt.Fprintln(a.Out, "  status | castles | events                inspect your realm")
 	fmt.Fprintln(a.Out, "  pause | resume                           control simulation time")
+	fmt.Fprintln(a.Out, "  speed <slower|slow|normal|fast|faster>  set day pace")
 	fmt.Fprintln(a.Out, "  build <castle#> <building>               construct an economy or army building")
 	fmt.Fprintln(a.Out, "  train <castle#> <soldiers|artillery> <n> raise units")
 	fmt.Fprintln(a.Out, "  garrison <castle#> <n>                   assign defensive troops")
 	fmt.Fprintln(a.Out, "  withdraw <castle#> <n>                   move garrison troops to the field army")
+	fmt.Fprintln(a.Out, "  move <from#> <to#> <troops>              send troops to a friendly or allied castle")
+	fmt.Fprintln(a.Out, "  request <castle#>                        request 15% of an adjacent ally/vassal army (50% chance)")
+	fmt.Fprintln(a.Out, "  trade <source#> <target#> <gold> <wood> <food>  exchange resources with allies or vassals")
 	fmt.Fprintln(a.Out, "  upgrade <castle#>                        improve troops at a forge")
 	fmt.Fprintln(a.Out, "  diplomacy <war|rival|truce|ally|vassal> <castle#>")
-	fmt.Fprintln(a.Out, "  attack <from#> <target#> <troops>        attack an adjacent enemy castle")
+	fmt.Fprintln(a.Out, "  attack <from#> <target#> <troops>        attack an adjacent enemy castle after 2-day march and 1-day battle")
 	fmt.Fprintln(a.Out, "  quit                                     end this session")
 	fmt.Fprintln(a.Out, "Use castle numbers shown by map/castles. Time keeps advancing while commands are entered.")
 }
@@ -263,6 +307,23 @@ func (a *App) playerGold() int {
 		}
 	}
 	return total
+}
+
+func speedLabel(seconds int) string {
+	switch seconds {
+	case 25:
+		return "slower"
+	case 20:
+		return "slow"
+	case 15:
+		return "normal"
+	case 10:
+		return "fast"
+	case 5:
+		return "faster"
+	default:
+		return "normal"
+	}
 }
 
 func (a *App) printOutcome() {

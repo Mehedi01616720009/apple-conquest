@@ -39,12 +39,15 @@ var (
 	gold      = color.RGBA{R: 193, G: 137, B: 43, A: 255}
 	colors    = map[string]color.RGBA{
 		"red":     {R: 190, G: 68, B: 56, A: 255},
+		"orange":  {R: 213, G: 119, B: 50, A: 255},
 		"green":   {R: 62, G: 122, B: 78, A: 255},
 		"yellow":  {R: 193, G: 137, B: 43, A: 255},
 		"blue":    {R: 59, G: 105, B: 161, A: 255},
 		"magenta": {R: 153, G: 79, B: 130, A: 255},
 		"cyan":    {R: 40, G: 131, B: 143, A: 255},
 		"white":   {R: 111, G: 118, B: 113, A: 255},
+		"pink":    {R: 207, G: 112, B: 151, A: 255},
+		"teal":    {R: 36, G: 143, B: 129, A: 255},
 	}
 	castlePoints = map[string]image.Point{
 		"Tripoli":    {X: 205, Y: 285},
@@ -65,10 +68,11 @@ type App struct {
 	setup          bool
 	name           string
 	nameFocused    bool
-	playerColor    string
 	startingCastle string
 	selectedCastle string
 	attackOrigin   string
+	moveOrigin     string
+	tradeOrigin    string
 	notice         string
 	lastTick       time.Time
 	tickElapsed    time.Duration
@@ -84,7 +88,6 @@ func Run() error {
 	app := &App{
 		setup:          true,
 		name:           "Ruler",
-		playerColor:    "green",
 		startingCastle: "Cairo",
 		fontSource:     fontSource,
 		faces:          make(map[int]*text.GoTextFace),
@@ -109,9 +112,9 @@ func (a *App) Update() error {
 			a.tickElapsed += now.Sub(a.lastTick)
 		}
 		a.lastTick = now
-		for a.tickElapsed >= time.Second {
+		for a.tickElapsed >= a.model.TickStepDuration() {
 			a.model.TickOnce()
-			a.tickElapsed -= time.Second
+			a.tickElapsed -= a.model.TickStepDuration()
 		}
 	} else {
 		a.lastTick = time.Now()
@@ -159,12 +162,26 @@ func (a *App) drawButton(screen *ebiten.Image, bounds image.Rectangle, label str
 	}
 	vector.DrawFilledRect(screen, float32(bounds.Min.X), float32(bounds.Min.Y), float32(bounds.Dx()), float32(bounds.Dy()), fill, true)
 	vector.StrokeRect(screen, float32(bounds.Min.X), float32(bounds.Min.Y), float32(bounds.Dx()), float32(bounds.Dy()), 1, lineColor, true)
-	w, h := text.Measure(label, a.face(15), 0)
-	a.drawText(screen, label, "left", float64(bounds.Min.X)+(float64(bounds.Dx())-w)/2, float64(bounds.Min.Y)+(float64(bounds.Dy())-h)/2, 15, textColor)
+	size := 13
+	maxWidth := float64(bounds.Dx() - 12)
+	width, height := text.Measure(label, a.face(size), 0)
+	for size > 9 && width > maxWidth {
+		size--
+		width, height = text.Measure(label, a.face(size), 0)
+	}
+	if width > maxWidth {
+		runes := []rune(label)
+		for len(runes) > 1 && width > maxWidth {
+			runes = runes[:len(runes)-1]
+			label = string(runes) + "..."
+			width, height = text.Measure(label, a.face(size), 0)
+		}
+	}
+	a.drawText(screen, label, "left", float64(bounds.Min.X)+(float64(bounds.Dx())-width)/2, float64(bounds.Min.Y)+(float64(bounds.Dy())-height)/2, size, textColor)
 }
 
 func (a *App) startGame() {
-	world, err := game.NewGame(strings.TrimSpace(a.name), a.playerColor, a.startingCastle, time.Now().UnixNano())
+	world, err := game.NewGame(strings.TrimSpace(a.name), "", a.startingCastle, time.Now().UnixNano())
 	if err != nil {
 		a.notice = err.Error()
 		return
@@ -197,13 +214,6 @@ func (a *App) updateSetup() {
 		a.nameFocused = true
 		return
 	}
-	for index, colorName := range []string{"green", "red", "blue", "yellow", "cyan", "magenta", "white"} {
-		bounds := image.Rect(78+index*51, 389, 120+index*51, 431)
-		if image.Pt(x, y).In(bounds) {
-			a.playerColor = colorName
-			return
-		}
-	}
 	for index, castleName := range game.CastleNames() {
 		column, row := index%2, index/2
 		bounds := image.Rect(566+column*353, 267+row*81, 900+column*353, 323+row*81)
@@ -221,14 +231,56 @@ func (a *App) handleGameClick(x, y int) {
 	if a.model == nil || a.model.Outcome != game.Ongoing {
 		return
 	}
-	if image.Pt(x, y).In(image.Rect(1170, 17, 1328, 57)) {
+	if image.Pt(x, y).In(image.Rect(1205, 17, 1328, 57)) {
 		a.model.Paused = !a.model.Paused
 		return
+	}
+	for index, preset := range []struct {
+		label string
+		value string
+	}{{"Slower", "slower"}, {"Slow", "slow"}, {"Normal", "normal"}, {"Fast", "fast"}, {"Faster", "faster"}} {
+		bounds := image.Rect(820+index*60, 17, 874+index*60, 57)
+		if image.Pt(x, y).In(bounds) {
+			if err := a.model.SetSpeed(preset.value); err != nil {
+				a.notice = err.Error()
+			} else {
+				a.notice = fmt.Sprintf("Speed set to %s (%d sec/day).", preset.label, a.model.SpeedSeconds)
+			}
+			return
+		}
 	}
 	for _, name := range a.model.Order {
 		point := castlePoints[name]
 		distance := math.Hypot(float64(x-point.X), float64(y-point.Y))
 		if distance <= 40 {
+			if a.moveOrigin != "" && name != a.moveOrigin {
+				origin := a.model.Castles[a.moveOrigin]
+				if origin == nil {
+					a.notice = "Select a valid army source first."
+					a.moveOrigin = ""
+					return
+				}
+				amount := origin.Troops
+				if amount < 1 {
+					a.notice = "This castle has no troops available to move."
+					a.moveOrigin = ""
+					return
+				}
+				a.runAction(func() error { return a.model.MoveArmy(a.moveOrigin, name, amount) })
+				a.moveOrigin = ""
+				return
+			}
+			if a.tradeOrigin != "" && name != a.tradeOrigin {
+				source := a.model.Castles[a.tradeOrigin]
+				if source == nil {
+					a.notice = "Select a valid source castle for trade."
+					a.tradeOrigin = ""
+					return
+				}
+				a.runAction(func() error { return a.model.Trade(a.tradeOrigin, name, 25, 25, 25) })
+				a.tradeOrigin = ""
+				return
+			}
 			a.selectedCastle = name
 			return
 		}
@@ -245,34 +297,46 @@ func (a *App) handleGameClick(x, y int) {
 }
 
 func (a *App) handleOwnedCastleClick(x, y int, selected *game.Castle) {
-	if pointIn(x, y, actionRect(0, 0, true)) {
+	switch {
+	case pointIn(x, y, actionRect(0, 0, true)):
 		a.attackOrigin = selected.Name
 		a.notice = fmt.Sprintf("%s is ready as your attack origin.", selected.Name)
-		return
-	}
-	switch {
 	case pointIn(x, y, actionRect(1, 0, false)):
 		a.runAction(func() error { return a.model.Train(selected.Name, "soldiers", 10) })
 	case pointIn(x, y, actionRect(1, 1, false)):
+		a.runAction(func() error { return a.model.Train(selected.Name, "artillery", 10) })
+	case pointIn(x, y, actionRect(1, 2, false)):
 		a.runAction(func() error { return a.model.Build(selected.Name, game.Farm) })
 	case pointIn(x, y, actionRect(2, 0, false)):
+		a.runAction(func() error { return a.model.Build(selected.Name, game.Sawmill) })
+	case pointIn(x, y, actionRect(2, 1, false)):
+		a.runAction(func() error { return a.model.Build(selected.Name, game.Market) })
+	case pointIn(x, y, actionRect(2, 2, false)):
+		a.runAction(func() error { return a.model.Build(selected.Name, game.Barracks) })
+	case pointIn(x, y, actionRect(3, 0, false)):
+		a.runAction(func() error { return a.model.Build(selected.Name, game.Artillery) })
+	case pointIn(x, y, actionRect(3, 1, false)):
+		a.runAction(func() error { return a.model.Build(selected.Name, game.Forge) })
+	case pointIn(x, y, actionRect(3, 2, false)):
+		a.runAction(func() error { return a.model.Upgrade(selected.Name) })
+	case pointIn(x, y, actionRect(4, 0, false)):
 		amount := min(10, selected.Troops)
 		if amount == 0 {
 			a.notice = "No field troops are available to garrison."
 		} else {
 			a.runAction(func() error { return a.model.SetGarrison(selected.Name, selected.Garrison+amount) })
 		}
-	case pointIn(x, y, actionRect(2, 1, false)):
+	case pointIn(x, y, actionRect(4, 1, false)):
 		amount := min(10, selected.Garrison)
 		if amount == 0 {
 			a.notice = "This castle has no garrison to withdraw."
 		} else {
 			a.runAction(func() error { return a.model.WithdrawGarrison(selected.Name, amount) })
 		}
-	case pointIn(x, y, actionRect(3, 0, false)):
-		a.runAction(func() error { return a.model.Build(selected.Name, game.Forge) })
-	case pointIn(x, y, actionRect(3, 1, false)):
-		a.runAction(func() error { return a.model.Upgrade(selected.Name) })
+	case pointIn(x, y, actionRect(4, 2, false)):
+		a.moveOrigin = selected.Name
+		a.tradeOrigin = ""
+		a.notice = fmt.Sprintf("Select a friendly or allied castle to move troops from %s.", selected.Name)
 	}
 }
 
@@ -292,7 +356,12 @@ func (a *App) handleForeignCastleClick(x, y int, selected *game.Castle) {
 			a.notice = "Select a valid attack origin first."
 			return
 		}
-		a.runAction(func() error { return a.model.Attack(a.attackOrigin, selected.Name, origin.Troops) })
+		a.runAction(func() error { return a.model.Attack(a.attackOrigin, selected.Name, origin.Troops/2) })
+	case pointIn(x, y, actionRect(3, 0, false)):
+		a.runAction(func() error { return a.model.RequestArmy(selected.Name) })
+	case pointIn(x, y, actionRect(3, 1, false)):
+		a.tradeOrigin = selected.Name
+		a.notice = fmt.Sprintf("Select a source castle to trade resources with %s.", selected.Name)
 	}
 }
 
@@ -321,9 +390,9 @@ func containsCastle(values []string, name string) bool {
 
 func actionRect(row, column int, fullWidth bool) image.Rectangle {
 	if fullWidth {
-		return image.Rect(948, 426+row*54, 1308, 470+row*54)
+		return image.Rect(948, 414+row*44, 1308, 450+row*44)
 	}
-	return image.Rect(948+column*184, 426+row*54, 1120+column*184, 470+row*54)
+	return image.Rect(948+column*118, 414+row*44, 1058+column*118, 450+row*44)
 }
 
 func (a *App) Draw(screen *ebiten.Image) {

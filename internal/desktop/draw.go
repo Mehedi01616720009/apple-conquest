@@ -18,20 +18,16 @@ func (a *App) drawSetup(screen *ebiten.Image) {
 	a.drawText(screen, "APPLE CONQUEST", "", 46, 22, 32, panel)
 	a.drawText(screen, "REAL-TIME STRATEGY  /  THE LEVANT", "", 49, 58, 12, color.RGBA{R: 191, G: 202, B: 185, A: 255})
 	a.drawText(screen, "A ruler's beginning", "", 53, 132, 26, ink)
-	a.drawText(screen, "Choose a name, color, and stronghold.", "", 53, 168, 15, mutedInk)
+	a.drawText(screen, "Choose a name and stronghold. Your banner follows its ruler.", "", 53, 168, 15, mutedInk)
 
 	drawPanel(screen, image.Rect(44, 204, 501, 829))
 	a.drawText(screen, "YOUR RULER", "", 78, 233, 12, mutedInk)
 	nameBox := image.Rect(78, 270, 466, 329)
 	drawInput(a, screen, nameBox, a.name, a.nameFocused)
 	a.drawText(screen, "YOUR BANNER", "", 78, 358, 12, mutedInk)
-	for index, name := range []string{"green", "red", "blue", "yellow", "cyan", "magenta", "white"} {
-		bounds := image.Rect(78+index*51, 389, 120+index*51, 431)
-		vector.DrawFilledRect(screen, float32(bounds.Min.X), float32(bounds.Min.Y), float32(bounds.Dx()), float32(bounds.Dy()), colors[name], true)
-		if name == a.playerColor {
-			vector.StrokeRect(screen, float32(bounds.Min.X-3), float32(bounds.Min.Y-3), float32(bounds.Dx()+6), float32(bounds.Dy()+6), 2, ink, true)
-		}
-	}
+	colorBounds := image.Rect(78, 389, 120, 431)
+	vector.DrawFilledRect(screen, float32(colorBounds.Min.X), float32(colorBounds.Min.Y), float32(colorBounds.Dx()), float32(colorBounds.Dy()), colors[game.RulerColorForCastle(a.startingCastle)], true)
+	a.drawText(screen, "Inherited from your starting castle", "", 137, 402, 13, mutedInk)
 	a.drawText(screen, "STARTING STRONGHOLD", "", 78, 466, 12, mutedInk)
 	vector.DrawFilledRect(screen, 78, 497, 388, 112, land, true)
 	a.drawText(screen, a.startingCastle, "", 101, 520, 25, ink)
@@ -78,7 +74,18 @@ func (a *App) drawGame(screen *ebiten.Image) {
 	if a.model.Paused {
 		buttonLabel = "RESUME"
 	}
-	a.drawButton(screen, image.Rect(1170, 17, 1328, 57), buttonLabel, color.RGBA{R: 53, G: 75, B: 62, A: 255}, panel, false)
+	for index, preset := range []struct {
+		label   string
+		seconds int
+	}{{"SLOWER", 25}, {"SLOW", 20}, {"NORMAL", 15}, {"FAST", 10}, {"FASTER", 5}} {
+		fill := color.RGBA{R: 239, G: 233, B: 214, A: 255}
+		textColor := ink
+		if a.model.SpeedSeconds == preset.seconds {
+			fill, textColor = green, panel
+		}
+		a.drawButton(screen, image.Rect(820+index*60, 17, 874+index*60, 57), preset.label, fill, textColor, false)
+	}
+	a.drawButton(screen, image.Rect(1205, 17, 1328, 57), buttonLabel, color.RGBA{R: 53, G: 75, B: 62, A: 255}, panel, false)
 
 	a.drawMap(screen)
 	a.drawCastlePanel(screen)
@@ -106,11 +113,9 @@ func (a *App) drawMap(screen *ebiten.Image) {
 	for _, name := range a.model.Order {
 		castle := a.model.Castles[name]
 		point := castlePoints[name]
-		ownerColor := red
+		ownerColor := rulerColor(castle.Owner, a.model)
 		if castle.Owner == a.model.PlayerName {
 			ownerColor = colors[a.model.PlayerColor]
-		} else if a.model.Vassals[castle.Owner] {
-			ownerColor = blue
 		}
 		vector.DrawFilledCircle(screen, float32(point.X), float32(point.Y), 27, ownerColor, true)
 		if name == a.selectedCastle {
@@ -123,12 +128,19 @@ func (a *App) drawMap(screen *ebiten.Image) {
 		a.drawCentered(screen, fmt.Sprintf("L%d  /  %d troops", castle.ForgeLevel+1, army), float64(point.X), float64(point.Y+56), 11, mutedInk)
 	}
 
-	vector.DrawFilledCircle(screen, 58, 835, 7, colors[a.model.PlayerColor], true)
-	a.drawText(screen, "PLAYER", "", 72, 829, 11, ink)
-	vector.DrawFilledCircle(screen, 158, 835, 7, blue, true)
-	a.drawText(screen, "VASSAL", "", 172, 829, 11, ink)
-	vector.DrawFilledCircle(screen, 262, 835, 7, red, true)
-	a.drawText(screen, "AI REALM", "", 276, 829, 11, ink)
+	for index, castleName := range a.model.Order {
+		castle := a.model.Castles[castleName]
+		owner := castle.OriginalRuler
+		column, row := index%5, index/5
+		x, y := 48+column*168, 812+row*25
+		ownerColor := colors[game.RulerColor(owner)]
+		vector.DrawFilledCircle(screen, float32(x), float32(y+4), 5, ownerColor, true)
+		label := owner
+		if ownerColor == colors[a.model.PlayerColor] {
+			label = "You: " + a.model.PlayerName
+		}
+		a.drawText(screen, truncate(label, 19), "", float64(x+10), float64(y), 9, ink)
+	}
 }
 
 func (a *App) drawCastlePanel(screen *ebiten.Image) {
@@ -138,11 +150,11 @@ func (a *App) drawCastlePanel(screen *ebiten.Image) {
 	if castle == nil {
 		return
 	}
-	control, controlColor := "INDEPENDENT", red
+	control, controlColor := "INDEPENDENT", rulerColor(castle.Owner, a.model)
 	if castle.Owner == a.model.PlayerName {
 		control, controlColor = "YOUR CASTLE", colors[a.model.PlayerColor]
 	} else if a.model.Vassals[castle.Owner] {
-		control, controlColor = "VASSAL", blue
+		control = "VASSAL"
 	}
 	a.drawText(screen, fmt.Sprintf("%02d  %s", castleIndex(castle.Name)+1, castle.Name), "", 950, 124, 23, ink)
 	a.drawText(screen, castle.Owner, "", 950, 160, 14, mutedInk)
@@ -167,11 +179,17 @@ func (a *App) drawCastlePanel(screen *ebiten.Image) {
 	if castle.Owner == a.model.PlayerName {
 		a.drawButton(screen, actionRect(0, 0, true), attackOriginLabel(a.attackOrigin, castle.Name), paper, ink, a.attackOrigin == castle.Name)
 		a.drawButton(screen, actionRect(1, 0, false), "RECRUIT 10", land, ink, false)
-		a.drawButton(screen, actionRect(1, 1, false), "BUILD FARM", land, ink, false)
-		a.drawButton(screen, actionRect(2, 0, false), "GARRISON +10", land, ink, false)
-		a.drawButton(screen, actionRect(2, 1, false), "WITHDRAW 10", land, ink, false)
-		a.drawButton(screen, actionRect(3, 0, false), "BUILD FORGE", land, ink, false)
-		a.drawButton(screen, actionRect(3, 1, false), "UPGRADE ARMY", land, ink, false)
+		a.drawButton(screen, actionRect(1, 1, false), "RECRUIT ART", land, ink, false)
+		a.drawButton(screen, actionRect(1, 2, false), "BUILD FARM", land, ink, false)
+		a.drawButton(screen, actionRect(2, 0, false), "BUILD SAWMILL", land, ink, false)
+		a.drawButton(screen, actionRect(2, 1, false), "BUILD MARKET", land, ink, false)
+		a.drawButton(screen, actionRect(2, 2, false), "BUILD BARRACKS", land, ink, false)
+		a.drawButton(screen, actionRect(3, 0, false), "BUILD ARTILLERY", land, ink, false)
+		a.drawButton(screen, actionRect(3, 1, false), "BUILD FORGE", land, ink, false)
+		a.drawButton(screen, actionRect(3, 2, false), "UPGRADE ARMY", land, ink, false)
+		a.drawButton(screen, actionRect(4, 0, false), "GARRISON +10", land, ink, false)
+		a.drawButton(screen, actionRect(4, 1, false), "WITHDRAW 10", land, ink, false)
+		a.drawButton(screen, actionRect(4, 2, false), "MOVE ARMY", land, ink, false)
 	} else {
 		a.drawButton(screen, actionRect(0, 0, false), "DECLARE WAR", color.RGBA{R: 244, G: 224, B: 214, A: 255}, red, false)
 		a.drawButton(screen, actionRect(0, 1, false), "TRUCE", land, ink, false)
@@ -187,16 +205,18 @@ func (a *App) drawCastlePanel(screen *ebiten.Image) {
 			attackLabel = "ATTACK FROM " + strings.ToUpper(a.attackOrigin)
 		}
 		a.drawButton(screen, actionRect(2, 0, true), attackLabel, attackFill, attackText, false)
+		a.drawButton(screen, actionRect(3, 0, false), "REQUEST ARMY", land, ink, false)
+		a.drawButton(screen, actionRect(3, 1, false), "TRADE", land, ink, false)
 	}
 	if a.notice != "" {
-		a.drawText(screen, a.notice, "", 950, 657, 11, mutedInk)
+		a.drawText(screen, truncate(a.notice, 56), "", 950, 640, 11, mutedInk)
 	}
-	vector.DrawFilledRect(screen, 948, 683, 356, 1, lineColor, false)
-	a.drawText(screen, "LATEST EVENTS", "", 950, 697, 11, mutedInk)
+	vector.DrawFilledRect(screen, 948, 665, 356, 1, lineColor, false)
+	a.drawText(screen, "LATEST EVENTS", "", 950, 679, 11, mutedInk)
 	events := a.model.Events
 	start := max(0, len(events)-5)
 	for index, event := range events[start:] {
-		a.drawText(screen, truncate(event, 47), "", 950, float64(721+index*26), 11, ink)
+		a.drawText(screen, truncate(event, 47), "", 950, float64(703+index*25), 11, ink)
 	}
 	if a.model.Outcome != game.Ongoing {
 		outcome := "CAMPAIGN LOST"
@@ -255,6 +275,13 @@ func attackOriginLabel(origin, current string) string {
 		return "SET AS ATTACK ORIGIN"
 	}
 	return "ATTACK ORIGIN  /  " + strings.ToUpper(origin)
+}
+
+func rulerColor(owner string, world *game.Game) color.RGBA {
+	if owner == world.PlayerName {
+		return colors[world.PlayerColor]
+	}
+	return colors[game.RulerColor(owner)]
 }
 
 func resourceTotals(world *game.Game) (goldTotal, woodTotal, foodTotal int) {

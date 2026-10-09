@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Building string
@@ -53,19 +54,33 @@ type Castle struct {
 	Buildings     map[Building]int
 }
 
+type ArmyOrder struct {
+	Type       string
+	From       string
+	To         string
+	Owner      string
+	Troops     int
+	Artillery  int
+	TravelDays int
+	HoldDays   int
+}
+
 type Game struct {
-	PlayerName  string
-	PlayerColor string
-	Castles     map[string]*Castle
-	Order       []string
-	Relations   map[string]Relation
-	Vassals     map[string]bool
-	Events      []string
-	Tick        int
-	Paused      bool
-	Outcome     Outcome
-	rng         *rand.Rand
-	aiActivity  []string
+	PlayerName    string
+	PlayerColor   string
+	Castles       map[string]*Castle
+	Order         []string
+	Relations     map[string]Relation
+	Vassals       map[string]bool
+	VassalParents map[string]string
+	Events        []string
+	Tick          int
+	Paused        bool
+	Outcome       Outcome
+	SpeedSeconds  int
+	Orders        []ArmyOrder
+	rng           *rand.Rand
+	aiActivity    []string
 }
 
 type castleSeed struct {
@@ -98,7 +113,7 @@ var buildingCosts = map[Building]struct{ gold, wood int }{
 	Forge:     {85, 35},
 }
 
-func NewGame(playerName, playerColor, startingCastle string, seed int64) (*Game, error) {
+func NewGame(playerName, _ string, startingCastle string, seed int64) (*Game, error) {
 	playerName = strings.TrimSpace(playerName)
 	if playerName == "" {
 		return nil, fmt.Errorf("ruler name cannot be empty")
@@ -108,15 +123,16 @@ func NewGame(playerName, playerColor, startingCastle string, seed int64) (*Game,
 	if err != nil {
 		return nil, err
 	}
-
 	g := &Game{
-		PlayerName:  playerName,
-		PlayerColor: playerColor,
-		Castles:     make(map[string]*Castle, len(castleSeeds)),
-		Relations:   make(map[string]Relation),
-		Vassals:     make(map[string]bool),
-		Outcome:     Ongoing,
-		rng:         rand.New(rand.NewSource(seed)),
+		PlayerName:    playerName,
+		PlayerColor:   RulerColorForCastle(start),
+		Castles:       make(map[string]*Castle, len(castleSeeds)),
+		Relations:     make(map[string]Relation),
+		Vassals:       make(map[string]bool),
+		VassalParents: make(map[string]string),
+		Outcome:       Ongoing,
+		SpeedSeconds:  15,
+		rng:           rand.New(rand.NewSource(seed)),
 	}
 	for _, seed := range castleSeeds {
 		c := &Castle{
@@ -138,6 +154,28 @@ func NewGame(playerName, playerColor, startingCastle string, seed int64) (*Game,
 	g.Castles[start].Owner = playerName
 	g.addEvent(fmt.Sprintf("%s has taken command of %s.", playerName, start))
 	return g, nil
+}
+
+func RulerColorForCastle(castleName string) string {
+	resolved, err := ResolveCastle(castleName)
+	if err != nil {
+		return "white"
+	}
+	colors := map[string]string{
+		"Cairo": "red", "Alexandria": "orange", "Kerak": "magenta", "Damascus": "blue",
+		"Jerusalem": "green", "Tripoli": "cyan", "Acre": "white", "Edessa": "pink",
+		"Aleppo": "yellow", "Mosul": "teal",
+	}
+	return colors[resolved]
+}
+
+func RulerColor(owner string) string {
+	for _, seed := range castleSeeds {
+		if seed.ruler == owner {
+			return RulerColorForCastle(seed.name)
+		}
+	}
+	return "white"
 }
 
 func ResolveCastle(value string) (string, error) {
@@ -194,4 +232,26 @@ func (g *Game) CheckOutcome() Outcome {
 
 func (g *Game) addEvent(message string) {
 	g.Events = append(g.Events, message)
+}
+
+func (g *Game) SetSpeed(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "slower":
+		g.SpeedSeconds = 25
+	case "slow":
+		g.SpeedSeconds = 20
+	case "normal":
+		g.SpeedSeconds = 15
+	case "fast":
+		g.SpeedSeconds = 10
+	case "faster":
+		g.SpeedSeconds = 5
+	default:
+		return fmt.Errorf("unknown speed %q; use slower, slow, normal, fast, or faster", value)
+	}
+	return nil
+}
+
+func (g *Game) TickStepDuration() time.Duration {
+	return time.Duration(g.SpeedSeconds) * time.Second / 10
 }

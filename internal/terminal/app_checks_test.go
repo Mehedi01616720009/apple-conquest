@@ -20,6 +20,9 @@ func TestCommandLoopActionsAndMap(t *testing.T) {
 	if err := app.Execute("attack 1 5 100"); err != nil {
 		t.Fatal(err)
 	}
+	for range 4 {
+		world.TickOnce()
+	}
 	if world.Castles["Jerusalem"].Owner != world.PlayerName {
 		t.Fatal("numbered attack command did not capture Jerusalem")
 	}

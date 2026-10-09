@@ -1,8 +1,10 @@
 package game
 
 import (
+	"math/rand"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestGame(t *testing.T) *Game {
@@ -24,6 +26,24 @@ func TestNewGameAssignsTenCastles(t *testing.T) {
 	}
 	if got := g.Castles["Alexandria"].Owner; got != "Emir Kazi Fadil" {
 		t.Fatalf("AI castle owner = %q, want Emir Kazi Fadil", got)
+	}
+}
+
+func TestStartingCastleDeterminesDistinctRulerColor(t *testing.T) {
+	g, err := NewGame("Test Ruler", "green", "Mosul", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.PlayerColor != "teal" {
+		t.Fatalf("player color = %q, want inherited Mosul color teal", g.PlayerColor)
+	}
+	seen := make(map[string]bool)
+	for _, name := range CastleNames() {
+		colorName := RulerColorForCastle(name)
+		if seen[colorName] {
+			t.Fatalf("castle color %q is assigned more than once", colorName)
+		}
+		seen[colorName] = true
 	}
 }
 
@@ -112,6 +132,9 @@ func TestWarAttackAndVassalVictory(t *testing.T) {
 	}
 	if err := g.Attack("Cairo", "Jerusalem", 100); err != nil {
 		t.Fatal(err)
+	}
+	for range 4 {
+		g.TickOnce()
 	}
 	if got := g.Castles["Jerusalem"].Owner; got != g.PlayerName {
 		t.Fatalf("Jerusalem owner = %q, want player after capture", got)
@@ -212,5 +235,167 @@ func TestLossWhenPlayerHasNoCastle(t *testing.T) {
 	}
 	if got := g.CheckOutcome(); got != Defeat {
 		t.Fatalf("outcome = %q, want defeat", got)
+	}
+}
+
+func TestSpeedPresetsMatchRequestedDayLengths(t *testing.T) {
+	g := newTestGame(t)
+	for preset, expected := range map[string]int{"slower": 25, "slow": 20, "normal": 15, "fast": 10, "faster": 5} {
+		if err := g.SetSpeed(preset); err != nil {
+			t.Fatalf("SetSpeed(%q) = %v", preset, err)
+		}
+		if g.SpeedSeconds != expected {
+			t.Fatalf("SpeedSeconds for %q = %d, want %d", preset, g.SpeedSeconds, expected)
+		}
+		if got := g.TickStepDuration(); got != time.Duration(expected)*time.Second/10 {
+			t.Fatalf("TickStepDuration for %q = %v, want %v", preset, got, time.Duration(expected)*time.Second/10)
+		}
+	}
+}
+
+func TestArmyMovementAndAttackQueue(t *testing.T) {
+	g := newTestGame(t)
+	g.Castles["Cairo"].Troops = 120
+	g.Castles["Alexandria"].Owner = g.PlayerName
+	g.Castles["Jerusalem"].Owner = "King Baldwin IV"
+	g.Relations["King Baldwin IV"] = War
+	if err := g.Attack("Cairo", "Jerusalem", 40); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Orders) != 1 {
+		t.Fatalf("queued orders = %d, want 1", len(g.Orders))
+	}
+	if got := g.Orders[0].Type; got != "attack" {
+		t.Fatalf("queued type = %q, want attack", got)
+	}
+	if got := g.Orders[0].TravelDays; got != 2 {
+		t.Fatalf("attack travel days = %d, want 2", got)
+	}
+	if err := g.MoveArmy("Cairo", "Alexandria", 25); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Orders) != 2 {
+		t.Fatalf("queue length after move = %d, want 2", len(g.Orders))
+	}
+}
+
+func TestRequestArmyNeedsAdjacentPlayerCastleAndSendsFifteenPercent(t *testing.T) {
+	var accepted, rejected bool
+	for seed := int64(1); seed <= 100 && (!accepted || !rejected); seed++ {
+		g := newTestGame(t)
+		g.rng = rand.New(rand.NewSource(seed))
+		source := g.Castles["Alexandria"]
+		source.Owner = "Ally"
+		source.Troops = 100
+		g.Relations["Ally"] = Alliance
+		if err := g.RequestArmy(source.Name); err != nil {
+			t.Fatal(err)
+		}
+		if len(g.Orders) == 1 {
+			accepted = true
+			if g.Orders[0].Type != "reinforcement" || g.Orders[0].Troops != 15 || g.Orders[0].To != "Cairo" {
+				t.Fatalf("reinforcement order = %+v, want 15 troops to adjacent Cairo", g.Orders[0])
+			}
+			if source.Troops != 85 {
+				t.Fatalf("source troops = %d, want 85 reserved", source.Troops)
+			}
+			for range 3 {
+				g.TickOnce()
+			}
+			if g.Castles["Cairo"].Troops != 115 {
+				t.Fatalf("destination troops = %d, want 115 after shipment", g.Castles["Cairo"].Troops)
+			}
+		} else {
+			rejected = true
+			if source.Troops != 100 {
+				t.Fatalf("rejected request changed source troops to %d", source.Troops)
+			}
+		}
+	}
+	if !accepted || !rejected {
+		t.Fatalf("seeded request trials: accepted=%t rejected=%t, want both outcomes", accepted, rejected)
+	}
+
+	g := newTestGame(t)
+	g.Castles["Cairo"].Owner = "Other ruler"
+	g.Castles["Alexandria"].Owner = "Ally"
+	g.Relations["Ally"] = Alliance
+	if err := g.RequestArmy("Alexandria"); err == nil {
+		t.Fatal("request should fail when no neighboring castle belongs directly to the player")
+	}
+}
+
+func TestVassalCanOnlyDeclareWarByCrossingRebellionThreshold(t *testing.T) {
+	g := newTestGame(t)
+	vassal := g.Castles["Alexandria"]
+	vassal.Owner = "Ally"
+	parent := g.Castles["Cairo"]
+	parent.Gold, parent.Wood, parent.Food, parent.Troops = 100, 100, 100, 100
+	vassal.Gold, vassal.Wood, vassal.Food, vassal.Troops = 80, 70, 70, 60
+	g.Vassals["Ally"] = true
+	g.VassalParents["Ally"] = g.PlayerName
+	g.Relations["Ally"] = Peace
+	for range 100 {
+		g.aiConsiderWar(vassal)
+	}
+	if g.Relations["Ally"] == War {
+		t.Fatal("vassal independently declared war before meeting rebellion thresholds")
+	}
+	g.TickOnce()
+	if !g.Vassals["Ally"] || g.Relations["Ally"] == War {
+		t.Fatal("vassal rebelled while resource or army was not above 70% of the parent")
+	}
+
+	vassal.Gold, vassal.Wood, vassal.Food, vassal.Troops = 90, 90, 90, 71
+	g.TickOnce()
+	if g.Vassals["Ally"] || g.Relations["Ally"] != War || g.Relations[g.PlayerName] != War {
+		t.Fatal("vassal did not break away and declare war after exceeding both 70% thresholds")
+	}
+}
+
+func TestAllianceRequiresComparableStrength(t *testing.T) {
+	g := newTestGame(t)
+	g.rng = rand.New(rand.NewSource(1))
+	cairo := g.Castles["Cairo"]
+	alexandria := g.Castles["Alexandria"]
+	cairo.Gold, cairo.Wood, cairo.Food = 100, 100, 100
+	cairo.Troops = 100
+	alexandria.Gold, alexandria.Wood, alexandria.Food = 100, 100, 100
+	alexandria.Troops = 20
+	if err := g.Diplomacy("ally", "Alexandria"); err == nil && g.Relations[alexandria.Owner] == Alliance {
+		t.Fatal("alliance should reject an overmatched proposal")
+	}
+}
+
+func TestVassalRequiresRelativeAdvantage(t *testing.T) {
+	g := newTestGame(t)
+	g.rng = rand.New(rand.NewSource(1))
+	cairo := g.Castles["Cairo"]
+	alexandria := g.Castles["Alexandria"]
+	cairo.Gold, cairo.Wood, cairo.Food = 90, 90, 90
+	cairo.Troops = 100
+	alexandria.Gold, alexandria.Wood, alexandria.Food = 80, 80, 80
+	alexandria.Troops = 60
+	if err := g.Diplomacy("vassal", "Alexandria"); err == nil && g.Vassals[alexandria.Owner] {
+		t.Fatal("vassal should be rejected unless the player exceeds the target by at least the required margins")
+	}
+}
+
+func TestAIPlayersCanDeclareWarOnEachOther(t *testing.T) {
+	g := newTestGame(t)
+	cairo := g.Castles["Cairo"]
+	alexandria := g.Castles["Alexandria"]
+	cairo.Owner = "Sultan Salahuddin Ayyubi"
+	alexandria.Owner = "Emir Kazi Fadil"
+	g.Relations["Sultan Salahuddin Ayyubi"] = Peace
+	g.Relations["Emir Kazi Fadil"] = Peace
+	for range 100 {
+		g.aiConsiderWar(alexandria)
+		if g.Relations["Sultan Salahuddin Ayyubi"] == War || g.Relations["Emir Kazi Fadil"] == War {
+			return
+		}
+	}
+	if g.Relations["Emir Kazi Fadil"] != War && g.Relations["Sultan Salahuddin Ayyubi"] != War {
+		t.Fatal("AI rulers should be able to declare war on neighboring AI rulers as well as the player")
 	}
 }

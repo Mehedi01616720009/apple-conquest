@@ -28,7 +28,28 @@ func (a *App) RenderMap() {
 		fmt.Fprintf(a.Out, "  %s  %s\n", border, border)
 		fmt.Fprintln(a.Out)
 	}
-	fmt.Fprintln(a.Out, "P = player   V = vassal   AI = independent ruler")
+	fmt.Fprintln(a.Out, "REALM COLORS -------------------------------------")
+	for index, name := range a.Game.Order {
+		owner := a.Game.Castles[name].OriginalRuler
+		colorName := game.RulerColor(owner)
+		label := owner
+		if colorName == a.Game.PlayerColor {
+			label = "You: " + a.Game.PlayerName
+		}
+		if index%5 == 0 {
+			fmt.Fprint(a.Out, "  ")
+		}
+		if a.Color {
+			fmt.Fprintf(a.Out, "%s%-22s\033[0m", colorCodes[colorName], truncateMapText(label, 20))
+		} else {
+			fmt.Fprintf(a.Out, "%-22s", truncateMapText(label, 20))
+		}
+		if index%5 == 4 || index == len(a.Game.Order)-1 {
+			fmt.Fprintln(a.Out)
+		} else {
+			fmt.Fprint(a.Out, "  ")
+		}
+	}
 	fmt.Fprintln(a.Out, "NEIGHBORS ----------------------------------------")
 	for _, name := range a.Game.Order {
 		castle := a.Game.Castles[name]
@@ -39,13 +60,12 @@ func (a *App) RenderMap() {
 func (a *App) mapCard(name string) []mapCellLine {
 	castle := a.Game.Castles[name]
 	control := "AI"
-	controlColor := "\033[31m"
+	ownerColor := game.RulerColor(castle.Owner)
 	if castle.Owner == a.Game.PlayerName {
 		control = "PLAYER"
-		controlColor = colorCodes[a.Game.PlayerColor]
+		ownerColor = a.Game.PlayerColor
 	} else if a.Game.Vassals[castle.Owner] {
 		control = "VASSAL"
-		controlColor = "\033[36m"
 	}
 	relation := a.Game.Relations[castle.Owner]
 	if relation == "" {
@@ -54,8 +74,8 @@ func (a *App) mapCard(name string) []mapCellLine {
 	return []mapCellLine{
 		{text: fmt.Sprintf("%02d  %s", indexOf(name)+1, castle.Name)},
 		{},
-		{text: "Ruler: " + castle.Owner},
-		{text: "Control: " + control, colorValue: control, color: controlColor},
+		{text: "Ruler: " + castle.Owner, colorValue: castle.Owner, color: colorCodes[ownerColor]},
+		{text: "Control: " + control},
 		{text: "Relation: " + string(relation)},
 		{},
 	}
@@ -71,8 +91,8 @@ func (a *App) renderMapCellLine(line mapCellLine) string {
 	text := truncateMapText(line.text, 34)
 	display := text
 	if a.Color && line.colorValue != "" {
-		if prefix, ok := strings.CutPrefix(text, "Control: "); ok {
-			display = fmt.Sprintf("Control: %s%s\033[0m", line.color, prefix)
+		if prefix, ok := strings.CutPrefix(text, "Ruler: "); ok {
+			display = fmt.Sprintf("Ruler: %s%s\033[0m", line.color, prefix)
 		}
 	}
 	padding := 34 - utf8.RuneCountInString(text)

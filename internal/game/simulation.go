@@ -10,10 +10,12 @@ func (g *Game) TickOnce() {
 		return
 	}
 	g.Tick++
+	g.processOrders()
 	for _, name := range g.Order {
 		c := g.Castles[name]
 		g.advanceEconomy(c)
 	}
+	g.checkVassalRebellions()
 	if g.Tick%5 == 0 {
 		for _, name := range g.Order {
 			c := g.Castles[name]
@@ -44,6 +46,64 @@ func (g *Game) TickOnce() {
 		}
 	}
 	g.CheckOutcome()
+}
+
+func (g *Game) processOrders() {
+	remaining := make([]ArmyOrder, 0, len(g.Orders))
+	for _, order := range g.Orders {
+		switch order.Type {
+		case "move":
+			if order.TravelDays > 0 {
+				order.TravelDays--
+				remaining = append(remaining, order)
+				continue
+			}
+			from, errFrom := g.Castle(order.From)
+			to, errTo := g.Castle(order.To)
+			if errFrom == nil && errTo == nil && from != nil && to != nil {
+				if order.Troops > from.Troops {
+					order.Troops = from.Troops
+				}
+				from.Troops -= order.Troops
+				to.Troops += order.Troops
+				g.addEvent(fmt.Sprintf("%d troops arrived at %s from %s.", order.Troops, to.Name, from.Name))
+			}
+		case "reinforcement":
+			if order.TravelDays > 0 {
+				order.TravelDays--
+				remaining = append(remaining, order)
+				continue
+			}
+			to, err := g.Castle(order.To)
+			if err == nil && to != nil {
+				to.Troops += order.Troops
+				g.addEvent(fmt.Sprintf("%d reinforcements from %s arrived at %s.", order.Troops, order.From, to.Name))
+			}
+		case "attack":
+			if order.TravelDays > 0 {
+				order.TravelDays--
+				remaining = append(remaining, order)
+				continue
+			}
+			if order.HoldDays > 0 {
+				order.HoldDays--
+				remaining = append(remaining, order)
+				continue
+			}
+			from, errFrom := g.Castle(order.From)
+			to, errTo := g.Castle(order.To)
+			if errFrom == nil && errTo == nil && from != nil && to != nil {
+				if order.Troops > from.Troops {
+					order.Troops = from.Troops
+				}
+				g.resolveBattle(from, to, order.Troops)
+				g.addEvent(fmt.Sprintf("The battle at %s concluded after the delayed assault from %s.", to.Name, from.Name))
+			}
+		default:
+			remaining = append(remaining, order)
+		}
+	}
+	g.Orders = remaining
 }
 
 func (g *Game) advanceEconomy(c *Castle) {
@@ -131,15 +191,47 @@ func canAfford(c *Castle, building Building) bool {
 }
 
 func (g *Game) aiConsiderWar(c *Castle) {
-	if g.Relations[c.Owner] != Peace || g.rng.Intn(100) >= 15 {
+	if g.Vassals[c.Owner] || g.Relations[c.Owner] != Peace || g.rng.Intn(100) >= 15 {
 		return
 	}
 	for _, neighborName := range c.Neighbors {
-		if g.PlayerControls(g.Castles[neighborName]) {
+		target := g.Castles[neighborName]
+		if target == nil || target.Owner == c.Owner {
+			continue
+		}
+		if g.PlayerControls(target) {
 			g.Relations[c.Owner] = War
-			g.addEvent(fmt.Sprintf("%s declared war on %s.", c.Owner, g.PlayerName))
+			g.Relations[target.Owner] = War
+			g.addEvent(fmt.Sprintf("%s declared war on %s.", c.Owner, target.Owner))
 			return
 		}
+		if !g.Vassals[target.Owner] && target.Owner != c.Owner && g.Relations[target.Owner] == Peace {
+			g.Relations[c.Owner] = War
+			g.Relations[target.Owner] = War
+			g.addEvent(fmt.Sprintf("%s declared war on %s.", c.Owner, target.Owner))
+			return
+		}
+	}
+}
+
+func (g *Game) checkVassalRebellions() {
+	for ruler := range g.Vassals {
+		if !g.Vassals[ruler] {
+			continue
+		}
+		parent := g.VassalParents[ruler]
+		if parent == "" {
+			parent = g.PlayerName
+		}
+		if float64(g.resourceSumFor(ruler)) <= float64(g.resourceSumFor(parent))*0.70 ||
+			float64(g.armyTotalFor(ruler)) <= float64(g.armyTotalFor(parent))*0.70 {
+			continue
+		}
+		delete(g.Vassals, ruler)
+		delete(g.VassalParents, ruler)
+		g.Relations[ruler] = War
+		g.Relations[parent] = War
+		g.addEvent(fmt.Sprintf("%s betrayed %s and declared independence.", ruler, parent))
 	}
 }
 
@@ -153,7 +245,10 @@ func (g *Game) tryAIAttack(c *Castle) bool {
 	}
 	for _, neighborName := range c.Neighbors {
 		target := g.Castles[neighborName]
-		if !g.PlayerControls(target) {
+		if target == nil || target.Owner == c.Owner {
+			continue
+		}
+		if !g.PlayerControls(target) && g.Relations[target.Owner] != War {
 			continue
 		}
 		committed := c.Troops / 2
