@@ -86,6 +86,23 @@ func (g *Game) SetGarrison(castleName string, amount int) error {
 	return nil
 }
 
+func (g *Game) WithdrawGarrison(castleName string, amount int) error {
+	c, err := g.Castle(castleName)
+	if err != nil {
+		return err
+	}
+	if c.Owner != g.PlayerName {
+		return fmt.Errorf("you can only withdraw troops from a castle you directly control")
+	}
+	if amount < 1 || amount > c.Garrison {
+		return fmt.Errorf("withdrawal must be between 1 and %d garrison troops", c.Garrison)
+	}
+	c.Garrison -= amount
+	c.Troops += amount
+	g.addEvent(fmt.Sprintf("%s withdrew %d troops from the garrison at %s.", g.PlayerName, amount, c.Name))
+	return nil
+}
+
 func (g *Game) Upgrade(castleName string) error {
 	c, err := g.Castle(castleName)
 	if err != nil {
@@ -201,30 +218,58 @@ func (g *Game) rulerPower(ruler string) int {
 }
 
 func (g *Game) resolveBattle(attacker, defender *Castle, committed int) {
-	attackPower := committed + attacker.Artillery*4 + attacker.ForgeLevel*10
-	defensePower := defender.Troops + defender.Garrison + defender.Artillery*4 + defender.ForgeLevel*10
+	defendingTroops := defender.Troops + defender.Garrison
+	attackPower := armyPower(committed, attacker.Artillery, attacker.ForgeLevel)
+	defensePower := armyPower(defendingTroops, defender.Artillery, defender.ForgeLevel)
+	attackerLosses := troopsLost(defensePower, attacker.ForgeLevel, committed)
+	defenderLosses := troopsLost(attackPower, defender.ForgeLevel, defendingTroops)
 	attacker.Troops -= committed
 	if attackPower > defensePower {
-		losses := committed / 5
-		if losses < 1 {
-			losses = 1
-		}
-		if losses > committed {
-			losses = committed
-		}
+		applyDefenderLosses(defender, defenderLosses)
 		defender.Owner = attacker.Owner
-		defender.Troops = committed - losses
-		defender.Garrison = 0
+		defender.Troops += committed - attackerLosses
 		defender.Artillery /= 2
-		g.addEvent(fmt.Sprintf("%s captured %s after defeating its garrison.", attacker.Owner, defender.Name))
+		g.addEvent(fmt.Sprintf("%s captured %s: attackers lost %d troops; defenders lost %d.", attacker.Owner, defender.Name, attackerLosses, defenderLosses))
 	} else {
-		losses := committed / 2
-		if losses < 1 {
-			losses = 1
-		}
-		attacker.Troops += committed - losses
-		g.addEvent(fmt.Sprintf("%s's attack on %s was repelled; %d troops were lost.", attacker.Owner, defender.Name, losses))
+		applyDefenderLosses(defender, defenderLosses)
+		attacker.Troops += committed - attackerLosses
+		g.addEvent(fmt.Sprintf("%s's attack on %s was repelled: attackers lost %d troops; defenders lost %d.", attacker.Owner, defender.Name, attackerLosses, defenderLosses))
 	}
+}
+
+func armyPower(troops, artillery, forgeLevel int) int64 {
+	if forgeLevel < 0 {
+		forgeLevel = 0
+	}
+	if forgeLevel > 30 {
+		forgeLevel = 30
+	}
+	unitPower := int64(1) << forgeLevel
+	return int64(troops)*unitPower + int64(artillery)*4
+}
+
+func troopsLost(enemyPower int64, forgeLevel, available int) int {
+	if enemyPower <= 0 || available <= 0 {
+		return 0
+	}
+	if forgeLevel < 0 {
+		forgeLevel = 0
+	}
+	if forgeLevel > 30 {
+		forgeLevel = 30
+	}
+	unitPower := int64(1) << forgeLevel
+	losses := 1 + (enemyPower-1)/unitPower
+	if losses >= int64(available) {
+		return available
+	}
+	return int(losses)
+}
+
+func applyDefenderLosses(defender *Castle, losses int) {
+	garrisonLosses := min(losses, defender.Garrison)
+	defender.Garrison -= garrisonLosses
+	defender.Troops -= losses - garrisonLosses
 }
 
 func contains(values []string, value string) bool {

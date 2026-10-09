@@ -1,6 +1,9 @@
 package game
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func newTestGame(t *testing.T) *Game {
 	t.Helper()
@@ -53,6 +56,28 @@ func TestAITroopsGrowOverTime(t *testing.T) {
 	}
 }
 
+func TestAIActivityIsReported(t *testing.T) {
+	g := newTestGame(t)
+	for range 10 {
+		g.TickOnce()
+	}
+	if !strings.Contains(strings.Join(g.Events, " "), "AI activity") {
+		t.Fatal("AI development was not reported in the event log")
+	}
+}
+
+func TestAdjacentAIEventuallyDeclaresWar(t *testing.T) {
+	g := newTestGame(t)
+	alexandria := g.Castles["Alexandria"]
+	for range 100 {
+		g.aiConsiderWar(alexandria)
+		if g.Relations[alexandria.Owner] == War {
+			return
+		}
+	}
+	t.Fatal("adjacent AI ruler never declared war during repeated decisions")
+}
+
 func TestBuildTrainAndGarrison(t *testing.T) {
 	g := newTestGame(t)
 	cairo := g.Castles["Cairo"]
@@ -101,6 +126,57 @@ func TestWarAttackAndVassalVictory(t *testing.T) {
 	}
 }
 
+func TestBattleSameLevelCasualties(t *testing.T) {
+	g := newTestGame(t)
+	attacker := g.Castles["Cairo"]
+	defender := g.Castles["Jerusalem"]
+	attacker.Troops = 100
+	defender.Troops = 120
+	g.resolveBattle(attacker, defender, 100)
+	if attacker.Troops != 0 {
+		t.Fatalf("attacking survivors = %d, want 0", attacker.Troops)
+	}
+	if defender.Troops != 20 {
+		t.Fatalf("defending survivors = %d, want 20", defender.Troops)
+	}
+}
+
+func TestHigherLevelArmyWinsWithScaledLosses(t *testing.T) {
+	g := newTestGame(t)
+	attacker := g.Castles["Cairo"]
+	defender := g.Castles["Jerusalem"]
+	attacker.Troops = 100
+	attacker.ForgeLevel = 1
+	defender.Troops = 120
+	g.resolveBattle(attacker, defender, 100)
+	if defender.Owner != attacker.Owner {
+		t.Fatalf("castle owner = %q, want attacker %q", defender.Owner, attacker.Owner)
+	}
+	if defender.Troops != 40 {
+		t.Fatalf("attacking survivors in captured castle = %d, want 40", defender.Troops)
+	}
+	if attacker.Troops != 0 {
+		t.Fatalf("source field army = %d, want committed army to leave", attacker.Troops)
+	}
+}
+
+func TestGarrisonDefendsSeparatelyFromFieldArmy(t *testing.T) {
+	g := newTestGame(t)
+	attacker := g.Castles["Cairo"]
+	defender := g.Castles["Jerusalem"]
+	attacker.Troops = 100
+	attacker.Garrison = 40
+	defender.Troops = 80
+	defender.Garrison = 40
+	g.resolveBattle(attacker, defender, 100)
+	if attacker.Garrison != 40 {
+		t.Fatalf("attacker source garrison = %d, want 40", attacker.Garrison)
+	}
+	if defender.Troops != 20 || defender.Garrison != 0 {
+		t.Fatalf("defender field/garrison = %d/%d, want 20/0", defender.Troops, defender.Garrison)
+	}
+}
+
 func TestRepelledAttackReturnsSurvivors(t *testing.T) {
 	g := newTestGame(t)
 	attacker := g.Castles["Cairo"]
@@ -108,8 +184,22 @@ func TestRepelledAttackReturnsSurvivors(t *testing.T) {
 	attacker.Troops = 20
 	defender.Troops = 200
 	g.resolveBattle(attacker, defender, 10)
-	if attacker.Troops != 15 {
-		t.Fatalf("attacker survivors = %d, want 15", attacker.Troops)
+	if attacker.Troops != 10 {
+		t.Fatalf("attacker survivors = %d, want 10", attacker.Troops)
+	}
+}
+
+func TestWithdrawGarrisonMovesTroopsToFieldArmy(t *testing.T) {
+	g := newTestGame(t)
+	if err := g.SetGarrison("Cairo", 40); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.WithdrawGarrison("Cairo", 15); err != nil {
+		t.Fatal(err)
+	}
+	cairo := g.Castles["Cairo"]
+	if cairo.Troops != 75 || cairo.Garrison != 25 {
+		t.Fatalf("field/garrison = %d/%d, want 75/25", cairo.Troops, cairo.Garrison)
 	}
 }
 

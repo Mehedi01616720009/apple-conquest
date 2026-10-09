@@ -167,6 +167,15 @@ func (a *App) Execute(line string) error {
 			return err
 		}
 		return a.Game.SetGarrison(parts[1], amount)
+	case "withdraw":
+		if len(parts) != 3 {
+			return fmt.Errorf("usage: withdraw <castle#> <troops>")
+		}
+		amount, err := parseAmount(parts[2])
+		if err != nil {
+			return err
+		}
+		return a.Game.WithdrawGarrison(parts[1], amount)
 	case "upgrade":
 		if len(parts) != 2 {
 			return fmt.Errorf("usage: upgrade <castle#>")
@@ -211,6 +220,7 @@ func (a *App) printHelp() {
 	fmt.Fprintln(a.Out, "  build <castle#> <building>               construct an economy or army building")
 	fmt.Fprintln(a.Out, "  train <castle#> <soldiers|artillery> <n> raise units")
 	fmt.Fprintln(a.Out, "  garrison <castle#> <n>                   assign defensive troops")
+	fmt.Fprintln(a.Out, "  withdraw <castle#> <n>                   move garrison troops to the field army")
 	fmt.Fprintln(a.Out, "  upgrade <castle#>                        improve troops at a forge")
 	fmt.Fprintln(a.Out, "  diplomacy <war|rival|truce|ally|vassal> <castle#>")
 	fmt.Fprintln(a.Out, "  attack <from#> <target#> <troops>        attack an adjacent enemy castle")

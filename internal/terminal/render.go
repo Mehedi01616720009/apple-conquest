@@ -3,54 +3,91 @@ package terminal
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"apple-conquest/internal/game"
 )
 
 func (a *App) RenderMap() {
 	fmt.Fprintln(a.Out, "\nREGIONAL MAP ------------------------------------")
-	rows := [][]string{
-		{"", "08 Edessa", "09 Aleppo", "10 Mosul"},
-		{"06 Tripoli", "", "04 Damascus", ""},
-		{"", "07 Acre", "05 Jerusalem", "03 Kerak"},
-		{"", "", "01 Cairo", "02 Alexandria"},
+	rows := [][2]string{
+		{"Edessa", "Aleppo"},
+		{"Mosul", "Damascus"},
+		{"Tripoli", "Acre"},
+		{"Jerusalem", "Kerak"},
+		{"Cairo", "Alexandria"},
 	}
 	for _, row := range rows {
-		fmt.Fprint(a.Out, "  ")
-		for _, label := range row {
-			if label == "" {
-				fmt.Fprint(a.Out, strings.Repeat(" ", 19))
-				continue
-			}
-			index := label[:2]
-			name := strings.TrimSpace(label[2:])
-			castle := a.Game.Castles[name]
-			ownerMark := "A"
-			if castle.Owner == a.Game.PlayerName {
-				ownerMark = "P"
-			} else if a.Game.Vassals[castle.Owner] {
-				ownerMark = "V"
-			}
-			text := fmt.Sprintf("[%s %-10s %s]", index, name, ownerMark)
-			if a.Color {
-				if ownerMark == "YOU" {
-					text = colorCodes[a.Game.PlayerColor] + text + "\033[0m"
-				} else if ownerMark == "VAS" {
-					text = "\033[36m" + text + "\033[0m"
-				} else {
-					text = "\033[31m" + text + "\033[0m"
-				}
-			}
-			fmt.Fprintf(a.Out, "%-19s", text)
+		left := a.mapCard(row[0])
+		right := a.mapCard(row[1])
+		border := "+" + strings.Repeat("-", 36) + "+"
+		fmt.Fprintf(a.Out, "  %s  %s\n", border, border)
+		for line := range left {
+			fmt.Fprintf(a.Out, "  %s  %s\n", a.renderMapCellLine(left[line]), a.renderMapCellLine(right[line]))
 		}
+		fmt.Fprintf(a.Out, "  %s  %s\n", border, border)
 		fmt.Fprintln(a.Out)
 	}
-	fmt.Fprintln(a.Out, "  P = player   V = vassal-held   A = independent ruler")
-	fmt.Fprintln(a.Out, "  Neighboring castles:")
+	fmt.Fprintln(a.Out, "P = player   V = vassal   AI = independent ruler")
+	fmt.Fprintln(a.Out, "NEIGHBORS ----------------------------------------")
 	for _, name := range a.Game.Order {
 		castle := a.Game.Castles[name]
-		fmt.Fprintf(a.Out, "    %02d %-12s -> %s\n", indexOf(name)+1, name, strings.Join(castle.Neighbors, ", "))
+		fmt.Fprintf(a.Out, "%02d %-12s -> %s\n", indexOf(name)+1, name, strings.Join(castle.Neighbors, ", "))
 	}
+}
+
+func (a *App) mapCard(name string) []mapCellLine {
+	castle := a.Game.Castles[name]
+	control := "AI"
+	controlColor := "\033[31m"
+	if castle.Owner == a.Game.PlayerName {
+		control = "PLAYER"
+		controlColor = colorCodes[a.Game.PlayerColor]
+	} else if a.Game.Vassals[castle.Owner] {
+		control = "VASSAL"
+		controlColor = "\033[36m"
+	}
+	relation := a.Game.Relations[castle.Owner]
+	if relation == "" {
+		relation = game.Peace
+	}
+	return []mapCellLine{
+		{text: fmt.Sprintf("%02d  %s", indexOf(name)+1, castle.Name)},
+		{},
+		{text: "Ruler: " + castle.Owner},
+		{text: "Control: " + control, colorValue: control, color: controlColor},
+		{text: "Relation: " + string(relation)},
+		{},
+	}
+}
+
+type mapCellLine struct {
+	text       string
+	colorValue string
+	color      string
+}
+
+func (a *App) renderMapCellLine(line mapCellLine) string {
+	text := truncateMapText(line.text, 34)
+	display := text
+	if a.Color && line.colorValue != "" {
+		if prefix, ok := strings.CutPrefix(text, "Control: "); ok {
+			display = fmt.Sprintf("Control: %s%s\033[0m", line.color, prefix)
+		}
+	}
+	padding := 34 - utf8.RuneCountInString(text)
+	if padding < 0 {
+		padding = 0
+	}
+	return "| " + display + strings.Repeat(" ", padding) + " |"
+}
+
+func truncateMapText(value string, width int) string {
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	return string(runes[:width-3]) + "..."
 }
 
 func (a *App) RenderStatus() {
@@ -67,7 +104,7 @@ func (a *App) RenderStatus() {
 			continue
 		}
 		fmt.Fprintf(a.Out, "%02d %-12s | Gold %4d Wood %4d Food %4d | Pop %4d\n", indexOf(name)+1, c.Name, c.Gold, c.Wood, c.Food, c.Population)
-		fmt.Fprintf(a.Out, "   Army %d (%d garrison) Artillery %d Forge %d\n", c.Troops, c.Garrison, c.Artillery, c.ForgeLevel)
+		fmt.Fprintf(a.Out, "   Army level %d: %d field, %d garrison | Artillery %d\n", c.ForgeLevel+1, c.Troops, c.Garrison, c.Artillery)
 		fmt.Fprintf(a.Out, "   Buildings: %s\n", buildingSummary(c))
 	}
 	fmt.Fprintf(a.Out, "Vassals: %d | Outcome: %s\n", len(a.Game.Vassals), a.Game.Outcome)

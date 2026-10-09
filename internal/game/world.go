@@ -65,6 +65,7 @@ type Game struct {
 	Paused      bool
 	Outcome     Outcome
 	rng         *rand.Rand
+	aiActivity  []string
 }
 
 type castleSeed struct {

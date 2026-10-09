@@ -1,6 +1,9 @@
 package game
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 func (g *Game) TickOnce() {
 	if g.Paused || g.Outcome != Ongoing {
@@ -17,12 +20,28 @@ func (g *Game) TickOnce() {
 			if c.Owner == g.PlayerName || g.Vassals[c.Owner] {
 				continue
 			}
-			g.aiDevelop(c)
+			if activity := g.aiDevelop(c); activity != "" {
+				g.aiActivity = append(g.aiActivity, activity)
+			}
 			g.aiConsiderWar(c)
 		}
 	}
 	if g.Tick%10 == 0 {
-		g.addEvent(fmt.Sprintf("Day %d: the realm continues to develop.", g.Tick/10))
+		if len(g.aiActivity) == 0 {
+			g.addEvent(fmt.Sprintf("Day %d: the realm continues to develop.", g.Tick/10))
+		} else {
+			const maxDetails = 3
+			details := g.aiActivity
+			if len(details) > maxDetails {
+				details = details[:maxDetails]
+			}
+			message := fmt.Sprintf("Day %d: AI activity (%d actions): %s", g.Tick/10, len(g.aiActivity), joinActivity(details))
+			if extra := len(g.aiActivity) - len(details); extra > 0 {
+				message += fmt.Sprintf("; and %d more", extra)
+			}
+			g.addEvent(message)
+			g.aiActivity = nil
+		}
 	}
 	g.CheckOutcome()
 }
@@ -49,39 +68,51 @@ func (g *Game) advanceEconomy(c *Castle) {
 	}
 }
 
-func (g *Game) aiDevelop(c *Castle) {
+func (g *Game) aiDevelop(c *Castle) string {
 	if g.Relations[c.Owner] == War && g.tryAIAttack(c) {
-		return
+		return ""
 	}
 	if c.Buildings[Barracks] > 0 && c.Troops < 180 && c.Gold >= 30 && c.Wood >= 15 && c.Food >= 10 {
 		c.Gold -= 30
 		c.Wood -= 15
 		c.Food -= 10
 		c.Troops += 10
+		return fmt.Sprintf("%s recruited 10 troops", c.Name)
 	} else if c.Buildings[Artillery] == 0 && c.Troops >= 180 && canAfford(c, Artillery) {
 		g.aiBuild(c, Artillery)
+		return fmt.Sprintf("%s built an artillery workshop", c.Name)
 	} else if c.Buildings[Artillery] > 0 && c.Artillery < 3 && c.Gold >= 8 && c.Wood >= 5 {
 		c.Gold -= 8
 		c.Wood -= 5
 		c.Artillery++
+		return fmt.Sprintf("%s trained artillery", c.Name)
 	} else if c.Buildings[Forge] == 0 && c.Troops >= 200 && canAfford(c, Forge) {
 		g.aiBuild(c, Forge)
+		return fmt.Sprintf("%s built a forge", c.Name)
 	} else if c.Buildings[Forge] > 0 && c.ForgeLevel < 2 && c.Gold >= 100 && c.Wood >= 40 {
 		c.Gold -= 100
 		c.Wood -= 40
 		c.ForgeLevel++
+		return fmt.Sprintf("%s upgraded its army", c.Name)
 	} else if c.Buildings[Farm] == 0 && canAfford(c, Farm) {
 		g.aiBuild(c, Farm)
+		return fmt.Sprintf("%s built a farm", c.Name)
 	} else if c.Buildings[Sawmill] == 0 && canAfford(c, Sawmill) {
 		g.aiBuild(c, Sawmill)
+		return fmt.Sprintf("%s built a sawmill", c.Name)
 	} else if c.Buildings[Market] == 0 && canAfford(c, Market) {
 		g.aiBuild(c, Market)
+		return fmt.Sprintf("%s built a market", c.Name)
 	} else if c.Buildings[Barracks] == 0 && canAfford(c, Barracks) {
 		g.aiBuild(c, Barracks)
+		return fmt.Sprintf("%s built barracks", c.Name)
 	} else if c.Gold >= 40 && c.Wood >= 12 {
 		choices := []Building{Farm, Sawmill, Market}
-		g.aiBuild(c, choices[g.rng.Intn(len(choices))])
+		building := choices[g.rng.Intn(len(choices))]
+		g.aiBuild(c, building)
+		return fmt.Sprintf("%s expanded its %s", c.Name, building)
 	}
+	return ""
 }
 
 func (g *Game) aiBuild(c *Castle, building Building) {
@@ -100,7 +131,7 @@ func canAfford(c *Castle, building Building) bool {
 }
 
 func (g *Game) aiConsiderWar(c *Castle) {
-	if g.Relations[c.Owner] != Peace || g.rng.Intn(100) != 0 {
+	if g.Relations[c.Owner] != Peace || g.rng.Intn(100) >= 15 {
 		return
 	}
 	for _, neighborName := range c.Neighbors {
@@ -110,6 +141,10 @@ func (g *Game) aiConsiderWar(c *Castle) {
 			return
 		}
 	}
+}
+
+func joinActivity(activity []string) string {
+	return strings.Join(activity, "; ")
 }
 
 func (g *Game) tryAIAttack(c *Castle) bool {
